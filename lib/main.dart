@@ -1,13 +1,17 @@
+import 'package:wakelock/wakelock.dart';
+
 import 'dart:convert';
 import 'dart:io';
 import 'package:path_provider/path_provider.dart';
 import 'package:camera/camera.dart';
-import 'package:firebase_ml_vision/firebase_ml_vision.dart';
+// import 'package:firebase_ml_vision/firebase_ml_vision.dart';
+import 'package:google_ml_kit/google_ml_kit.dart';
 import 'package:flutter/material.dart';
 import 'detector_painters.dart';
 import 'utils.dart';
 import 'package:image/image.dart' as imglib;
-import 'package:tflite_flutter/tflite_flutter.dart' as tfl;
+// import 'package:tflite_flutter/tflite_flutter.dart' as tfl;
+import 'package:tflite_flutter/tflite_flutter.dart';
 import 'package:quiver/collection.dart';
 import 'package:flutter/services.dart';
 
@@ -26,22 +30,27 @@ class _MyHomePage extends StatefulWidget {
   _MyHomePageState createState() => _MyHomePageState();
 }
 
-class _MyHomePageState extends State<_MyHomePage> {
-  File jsonFile;
+class _MyHomePageState extends State<_MyHomePage> with WidgetsBindingObserver {
+  late File jsonFile;
   dynamic _scanResults;
-  CameraController _camera;
+  CameraController? _camera;
   var interpreter;
   bool _isDetecting = false;
   CameraLensDirection _direction = CameraLensDirection.front;
   dynamic data = {};
   double threshold = 1.0;
-  Directory tempDir;
-  List e1;
+  double thresholdOpenEye = 0.3;
+  double thresholdSmile = 0.7;
+
+  late Directory tempDir;
+  List? e1;
   bool _faceFound = false;
   final TextEditingController _name = new TextEditingController();
   @override
   void initState() {
     super.initState();
+
+    Wakelock.enable();
 
     SystemChrome.setPreferredOrientations(
         [DeviceOrientation.portraitUp, DeviceOrientation.portraitDown]);
@@ -49,54 +58,67 @@ class _MyHomePageState extends State<_MyHomePage> {
   }
 
   Future loadModel() async {
+    Delegate? delegate;
     try {
-      final gpuDelegateV2 = tfl.GpuDelegateV2(
-          options: tfl.GpuDelegateOptionsV2(
-        false,
-        tfl.TfLiteGpuInferenceUsage.fastSingleAnswer,
-        tfl.TfLiteGpuInferencePriority.minLatency,
-        tfl.TfLiteGpuInferencePriority.auto,
-        tfl.TfLiteGpuInferencePriority.auto,
-      ));
+      if (Platform.isAndroid) {
+        delegate = GpuDelegateV2(
+            options: GpuDelegateOptionsV2(
+          isPrecisionLossAllowed: false,
+          inferencePreference: TfLiteGpuInferenceUsage.fastSingleAnswer,
+          inferencePriority1: TfLiteGpuInferencePriority.minLatency,
+          inferencePriority2: TfLiteGpuInferencePriority.auto,
+          inferencePriority3: TfLiteGpuInferencePriority.auto,
+        ));
+      } else if (Platform.isIOS) {
+        delegate = GpuDelegate(
+          options: GpuDelegateOptions(
+              allowPrecisionLoss: true,
+              waitType: TFLGpuDelegateWaitType.active),
+        );
+      }
+      var interpreterOptions = InterpreterOptions()..addDelegate(delegate!);
 
-      var interpreterOptions = tfl.InterpreterOptions()
-        ..addDelegate(gpuDelegateV2);
-      interpreter = await tfl.Interpreter.fromAsset('mobilefacenet.tflite',
+      interpreter = await Interpreter.fromAsset('mobilefacenet.tflite',
           options: interpreterOptions);
-    } on Exception {
+    } catch (e) {
       print('Failed to load model.');
+      print(e);
     }
   }
 
   void _initializeCamera() async {
+    Wakelock.enable();
+
     await loadModel();
     CameraDescription description = await getCamera(_direction);
 
-    ImageRotation rotation = rotationIntToImageRotation(
+    InputImageRotation rotation = rotationIntToImageRotation(
       description.sensorOrientation,
     );
 
-    _camera =
-        CameraController(description, ResolutionPreset.low, enableAudio: false);
-    await _camera.initialize();
-    await Future.delayed(Duration(milliseconds: 500));
+    _camera = CameraController(description, ResolutionPreset.medium,
+        enableAudio: false);
+    await _camera?.initialize();
+    await Future.delayed(Duration(milliseconds: 10));
     tempDir = await getApplicationDocumentsDirectory();
     String _embPath = tempDir.path + '/emb.json';
     jsonFile = new File(_embPath);
     if (jsonFile.existsSync()) data = json.decode(jsonFile.readAsStringSync());
 
-    _camera.startImageStream((CameraImage image) {
+    _camera?.startImageStream((CameraImage image) {
       if (_camera != null) {
         if (_isDetecting) return;
         _isDetecting = true;
         String res;
         dynamic finalResult = Multimap<String, Face>();
         detect(image, _getDetectionMethod(), rotation).then(
-          (dynamic result) async {
+          (List<Face> result) async {
             if (result.length == 0)
               _faceFound = false;
             else
               _faceFound = true;
+            print("face detected $_faceFound");
+            // print(_faceFound);
             Face _face;
             imglib.Image convertedImage =
                 _convertCameraImage(image, _direction);
@@ -106,15 +128,20 @@ class _MyHomePageState extends State<_MyHomePage> {
               y = (_face.boundingBox.top - 10);
               w = (_face.boundingBox.width + 10);
               h = (_face.boundingBox.height + 10);
-              imglib.Image croppedImage = imglib.copyCrop(
-                  convertedImage, x.round(), y.round(), w.round(), h.round());
-              croppedImage = imglib.copyResizeCropSquare(croppedImage, 112);
-              // int startTime = new DateTime.now().millisecondsSinceEpoch;
-              res = _recog(croppedImage);
-              // int endTime = new DateTime.now().millisecondsSinceEpoch;
-              // print("Inference took ${endTime - startTime}ms");
+              imglib.Image croppedImage = imglib.copyCrop(convertedImage,
+                  x: x.round(),
+                  y: y.round(),
+                  width: w.round(),
+                  height: h.round());
+              croppedImage =
+                  imglib.copyResizeCropSquare(croppedImage, size: 112);
+              int startTime = new DateTime.now().millisecondsSinceEpoch;
+              res = _recog(croppedImage, _face);
+              int endTime = new DateTime.now().millisecondsSinceEpoch;
+              print("Inference took ${endTime - startTime}ms");
               finalResult.add(res, _face);
             }
+            print(finalResult);
             setState(() {
               _scanResults = finalResult;
             });
@@ -131,26 +158,60 @@ class _MyHomePageState extends State<_MyHomePage> {
   }
 
   HandleDetection _getDetectionMethod() {
-    final faceDetector = FirebaseVision.instance.faceDetector(
+    final faceDetector = GoogleMlKit.vision.faceDetector(
       FaceDetectorOptions(
-        mode: FaceDetectorMode.accurate,
-      ),
+          performanceMode: FaceDetectorMode.accurate,
+          enableClassification: true,
+          enableContours: true,
+          enableLandmarks: false,
+          enableTracking: true),
     );
     return faceDetector.processImage;
+  }
+
+  // Size getImageSize() {
+  //   assert(_camera != null, 'Camera controller not initialized');
+  //   assert(_camera!.value.previewSize != null, 'Preview size is null');
+  //   return Size(
+  //     _camera!.value.previewSize!.height,
+  //     _camera!.value.previewSize!.width,
+  //   );
+  // }
+
+  @override
+  void dispose() {
+    Wakelock.disable();
+    _camera?.dispose();
+    super.dispose();
+  }
+
+  // #docregion AppLifecycle
+  @override
+  void didChangeAppLifecycleState(AppLifecycleState state) {
+    // App state changed before we got the chance to initialize.
+    if (_camera == null || !_camera!.value.isInitialized) {
+      return;
+    }
+
+    if (state == AppLifecycleState.inactive) {
+      _camera?.dispose();
+    } else if (state == AppLifecycleState.resumed) {
+      _initializeCamera();
+    }
   }
 
   Widget _buildResults() {
     const Text noResultsText = const Text('');
     if (_scanResults == null ||
         _camera == null ||
-        !_camera.value.isInitialized) {
+        !_camera!.value.isInitialized) {
       return noResultsText;
     }
     CustomPainter painter;
 
     final Size imageSize = Size(
-      _camera.value.previewSize.height,
-      _camera.value.previewSize.width,
+      _camera!.value.previewSize!.height,
+      _camera!.value.previewSize!.width,
     );
     painter = FaceDetectorPainter(imageSize, _scanResults);
     return CustomPaint(
@@ -159,24 +220,41 @@ class _MyHomePageState extends State<_MyHomePage> {
   }
 
   Widget _buildImage() {
-    if (_camera == null || !_camera.value.isInitialized) {
+    if (_camera == null || !_camera!.value.isInitialized) {
       return Center(
         child: CircularProgressIndicator(),
       );
     }
 
-    return Container(
-      constraints: const BoxConstraints.expand(),
-      child: _camera == null
-          ? const Center(child: null)
-          : Stack(
+    return _camera == null
+        ? const Center(child: null)
+        : Container(
+            constraints: const BoxConstraints.expand(),
+            child: Stack(
               fit: StackFit.expand,
               children: <Widget>[
-                CameraPreview(_camera),
-                _buildResults(),
+                Column(
+                  children: <Widget>[
+                    CameraPreview(_camera!, child: _buildResults())
+                  ],
+                ),
               ],
             ),
-    );
+          );
+
+    // return Container(
+    //   constraints: const BoxConstraints.expand(),
+    //   child: _camera == null
+    //       ? const Center(child: null)
+    //       : Stack(
+    //           // fit: StackFit.expand,
+    //           fit: StackFit.passthrough,
+    //           children: <Widget>[
+    //             CameraPreview(_camera!),
+    //             _buildResults(),
+    //           ],
+    //         ),
+    // );
   }
 
   void _toggleCameraDirection() async {
@@ -185,8 +263,12 @@ class _MyHomePageState extends State<_MyHomePage> {
     } else {
       _direction = CameraLensDirection.back;
     }
-    await _camera.stopImageStream();
-    await _camera.dispose();
+    try {
+      await _camera?.stopImageStream();
+    } catch (e) {}
+    try {
+      await _camera?.dispose();
+    } catch (e) {}
 
     setState(() {
       _camera = null;
@@ -251,10 +333,12 @@ class _MyHomePageState extends State<_MyHomePage> {
     int width = image.width;
     int height = image.height;
     // imglib -> Image package from https://pub.dartlang.org/packages/image
-    var img = imglib.Image(width, height); // Create Image buffer
+    var img = imglib.Image(width: width, height: height); // Create Image buffer
     const int hexFF = 0xFF000000;
     final int uvyButtonStride = image.planes[1].bytesPerRow;
-    final int uvPixelStride = image.planes[1].bytesPerPixel;
+    final int uvPixelStride = image.planes[1].bytesPerPixel!;
+    img.data = img.data!;
+    // if (img.data != null)
     for (int x = 0; x < width; x++) {
       for (int y = 0; y < height; y++) {
         final int uvIndex =
@@ -271,26 +355,31 @@ class _MyHomePageState extends State<_MyHomePage> {
         int b = (yp + up * 1814 / 1024 - 227).round().clamp(0, 255);
         // color: 0x FF  FF  FF  FF
         //           A   B   G   R
-        img.data[index] = hexFF | (b << 16) | (g << 8) | r;
+        img.data!.setPixelRgb(
+            x, y, r, g, b); // ![index] = hexFF | (b << 16) | (g << 8) | r;
       }
     }
     var img1 = (_dir == CameraLensDirection.front)
-        ? imglib.copyRotate(img, -90)
-        : imglib.copyRotate(img, 90);
+        ? imglib.copyRotate(img, angle: -90)
+        : imglib.copyRotate(img, angle: 90);
     return img1;
   }
 
-  String _recog(imglib.Image img) {
+  String _recog(imglib.Image img, Face face) {
     List input = imageToByteListFloat32(img, 112, 128, 128);
     input = input.reshape([1, 112, 112, 3]);
-    List output = List(1 * 192).reshape([1, 192]);
+    // List output = List.filled(192, 0, growable: false).reshape([1, 192]);
+    List output = List.generate(1, (index) => List.filled(192, 0));
     interpreter.run(input, output);
     output = output.reshape([192]);
     e1 = List.from(output);
-    return compare(e1).toUpperCase();
+
+    return compare(e1!).toUpperCase() +
+        " | ${(face.leftEyeOpenProbability ?? 0) > thresholdOpenEye ? "O" : "-"}${(face.smilingProbability ?? 0) > thresholdSmile ? "v" : "_"}${(face.rightEyeOpenProbability ?? 0) > thresholdOpenEye ? "O" : "-"} | tId: ${face.trackingId}";
   }
 
   String compare(List currEmb) {
+    print("compare");
     if (data.length == 0) return "No Face saved";
     double minDist = 999;
     double currDist = 0.0;
@@ -342,7 +431,7 @@ class _MyHomePageState extends State<_MyHomePage> {
             );
           }),
       actions: <Widget>[
-        new FlatButton(
+        new TextButton(
           child: Text("OK"),
           onPressed: () {
             _initializeCamera();
@@ -378,14 +467,14 @@ class _MyHomePageState extends State<_MyHomePage> {
         ],
       ),
       actions: <Widget>[
-        new FlatButton(
+        new TextButton(
             child: Text("Save"),
             onPressed: () {
               _handle(_name.text.toUpperCase());
               _name.clear();
               Navigator.pop(context);
             }),
-        new FlatButton(
+        new TextButton(
           child: Text("Cancel"),
           onPressed: () {
             _initializeCamera();
@@ -402,7 +491,7 @@ class _MyHomePageState extends State<_MyHomePage> {
   }
 
   void _handle(String text) {
-    data[text] = e1;
+    data[text] = e1 ?? [];
     jsonFile.writeAsStringSync(json.encode(data));
     _initializeCamera();
   }

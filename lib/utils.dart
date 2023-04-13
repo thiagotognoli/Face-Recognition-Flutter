@@ -3,10 +3,14 @@ import 'dart:math';
 import 'dart:typed_data';
 import 'dart:ui';
 import 'package:camera/camera.dart';
-import 'package:firebase_ml_vision/firebase_ml_vision.dart';
+import 'package:flutter/foundation.dart';
+// import 'package:firebase_ml_vision/firebase_ml_vision.dart';
+import 'package:google_ml_kit/google_ml_kit.dart';
 import 'package:image/image.dart' as imglib;
 
-typedef HandleDetection = Future<dynamic> Function(FirebaseVisionImage image);
+// typedef HandleDetection = Future<dynamic> Function(FirebaseVisionImage image);
+typedef HandleDetection = Future<List<Face>> Function(InputImage inputImage);
+
 enum Choice { view, delete }
 
 Future<CameraDescription> getCamera(CameraLensDirection dir) async {
@@ -17,17 +21,18 @@ Future<CameraDescription> getCamera(CameraLensDirection dir) async {
   );
 }
 
-FirebaseVisionImageMetadata buildMetaData(
+InputImageData buildMetaData(
   CameraImage image,
-  ImageRotation rotation,
+  InputImageRotation rotation,
 ) {
-  return FirebaseVisionImageMetadata(
-    rawFormat: image.format.raw,
+  return InputImageData(
+    imageRotation: rotation,
+    inputImageFormat: InputImageFormatValue.fromRawValue(image.format.raw) ??
+        InputImageFormat.yuv_420_888,
     size: Size(image.width.toDouble(), image.height.toDouble()),
-    rotation: rotation,
     planeData: image.planes.map(
       (Plane plane) {
-        return FirebaseVisionImagePlaneMetadata(
+        return InputImagePlaneMetadata(
           bytesPerRow: plane.bytesPerRow,
           height: plane.height,
           width: plane.width,
@@ -37,30 +42,37 @@ FirebaseVisionImageMetadata buildMetaData(
   );
 }
 
-Future<dynamic> detect(
+Future<List<Face>> detect(
   CameraImage image,
   HandleDetection handleDetection,
-  ImageRotation rotation,
+  InputImageRotation rotation,
 ) async {
+  // for mlkit 13
+  final WriteBuffer allBytes = WriteBuffer();
+  for (final Plane plane in image.planes) {
+    allBytes.putUint8List(plane.bytes);
+  }
+  final bytes = allBytes.done().buffer.asUint8List();
+
   return handleDetection(
-    FirebaseVisionImage.fromBytes(
-      image.planes[0].bytes,
-      buildMetaData(image, rotation),
+    InputImage.fromBytes(
+      bytes: bytes,
+      inputImageData: buildMetaData(image, rotation),
     ),
   );
 }
 
-ImageRotation rotationIntToImageRotation(int rotation) {
+InputImageRotation rotationIntToImageRotation(int rotation) {
   switch (rotation) {
     case 0:
-      return ImageRotation.rotation0;
+      return InputImageRotation.rotation0deg;
     case 90:
-      return ImageRotation.rotation90;
+      return InputImageRotation.rotation90deg;
     case 180:
-      return ImageRotation.rotation180;
+      return InputImageRotation.rotation180deg;
     default:
       assert(rotation == 270);
-      return ImageRotation.rotation270;
+      return InputImageRotation.rotation270deg;
   }
 }
 
@@ -69,12 +81,12 @@ Float32List imageToByteListFloat32(
   var convertedBytes = Float32List(1 * inputSize * inputSize * 3);
   var buffer = Float32List.view(convertedBytes.buffer);
   int pixelIndex = 0;
-  for (var i = 0; i < inputSize; i++) {
-    for (var j = 0; j < inputSize; j++) {
-      var pixel = image.getPixel(j, i);
-      buffer[pixelIndex++] = (imglib.getRed(pixel) - mean) / std;
-      buffer[pixelIndex++] = (imglib.getGreen(pixel) - mean) / std;
-      buffer[pixelIndex++] = (imglib.getBlue(pixel) - mean) / std;
+  for (var y = 0; y < inputSize; y++) {
+    for (var x = 0; x < inputSize; x++) {
+      var pixel = image.getPixel(x, y);
+      buffer[pixelIndex++] = (pixel.rNormalized - 0.5) / 0.5;
+      buffer[pixelIndex++] = (pixel.gNormalized - 0.5) / 0.5;
+      buffer[pixelIndex++] = (pixel.bNormalized - 0.5) / 0.5;
     }
   }
   return convertedBytes.buffer.asFloat32List();

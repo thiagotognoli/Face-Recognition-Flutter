@@ -1,14 +1,16 @@
 import 'dart:ui';
-import 'package:firebase_ml_vision/firebase_ml_vision.dart';
+import 'package:google_ml_kit/google_ml_kit.dart';
+// import 'package:firebase_ml_vision/firebase_ml_vision.dart';
 import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 
 class FaceDetectorPainter extends CustomPainter {
-  FaceDetectorPainter(this.imageSize, this.results);
   final Size imageSize;
-  double scaleX, scaleY;
   dynamic results;
-  Face face;
+  late double scaleX, scaleY;
+  late Face face;
+  FaceDetectorPainter(this.imageSize, this.results);
+
   @override
   void paint(Canvas canvas, Size size) {
     final Paint paint = Paint()
@@ -39,7 +41,7 @@ class FaceDetectorPainter extends CustomPainter {
         textPainter.paint(
             canvas,
             new Offset(
-                size.width - (60 + face.boundingBox.left.toDouble()) * scaleX,
+                size.width - (100 + face.boundingBox.left.toDouble()) * scaleX,
                 (face.boundingBox.top.toDouble() - 10) * scaleY));
       }
     }
@@ -52,11 +54,11 @@ class FaceDetectorPainter extends CustomPainter {
 }
 
 RRect _scaleRect(
-    {@required Rect rect,
-    @required Size imageSize,
-    @required Size widgetSize,
-    double scaleX,
-    double scaleY}) {
+    {required Rect rect,
+    required Size imageSize,
+    required Size widgetSize,
+    required double scaleX,
+    required double scaleY}) {
   return RRect.fromLTRBR(
       (widgetSize.width - rect.left.toDouble() * scaleX),
       rect.top.toDouble() * scaleY,
