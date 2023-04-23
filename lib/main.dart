@@ -357,6 +357,7 @@ class _MyHomePageState extends State<_MyHomePage> with WidgetsBindingObserver {
         //           A   B   G   R
         img.data!.setPixelRgb(
             x, y, r, g, b); // ![index] = hexFF | (b << 16) | (g << 8) | r;
+        // img.data!.setPixelRgba(x, y, r, g, b, 0xFF);
       }
     }
     var img1 = (_dir == CameraLensDirection.front)
